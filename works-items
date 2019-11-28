@@ -1,0 +1,8 @@
+Create py scripts for one-liner image conversion (raw -> png / jpg, in formats etc, and back)
+
+create macros fro quick adoption of qsort()
+
+rewrite a permuter, do most of the things using cpp templates
+
+write a convenience C wrapper on getopt()
+

@@ -1,0 +1,34 @@
+Convert JPG / PNG images to raw format
+======================================
+
+ffmpeg -vcodec mjpeg -i filename.jpg -vcodec rawvideo -f rawvideo -pix_fmt yuv444p rawfilename.raw
+ffmpeg -vcodec png -i filename.jpg -vcodec rawvideo -f rawvideo -pix_fmt yuv444p rawfilename.raw
+
+Convert raw to JPEG / PNG
+=========================
+
+ffmpeg -vcodec rawvideo -f rawvideo -pix_fmt rgba -s 0x0 -i rawfilename.raw -f image2 -vcodec png filename.png
+
+Do endianness ops
+=================
+
+`man endian` should provide the results
+
+quick links:
+
+#include <endian.h>
+
+and use something like:
+
+uint16_t htobe16(uin16_t);
+uint16_t htole16(uin16_t);
+uint16_t le16toh(uin16_t);
+uint16_t be16toh(uin16_t);
+
+
+
+
+
+
+
+
