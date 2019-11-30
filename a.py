@@ -3,10 +3,11 @@ import numpy as np
 from scipy.fftpack import fft
 from scipy.signal import firwin
 import matplotlib.pyplot as plot
+import math
 
 fft_len = 40000
 
-def showplots(v, references=None, logfft=False, marker=False, grid=False):
+def showplots(v, references=None, logfft=False, marker=False, grid=False, norm=False, fftnorm=True):
 	if v['array'].shape[0] > fft_len:
 		raise Exception('Signal too large')
 
@@ -42,10 +43,10 @@ def showplots(v, references=None, logfft=False, marker=False, grid=False):
 
 	vplot = plot.subplot(211)
 
-	vplot.plot(np.arange(0, v['array'].shape[0], 1), v['array'], label=v['name'], marker=mark)
+	vplot.plot(np.arange(0, v['array'].shape[0], 1), v['array'] if not norm else v['array'] / np.amax(v['array']), label=v['name'], marker=mark)
         if references is not None:
                 for idx, r in zip(range(0, len(references)), references):
-                        vplot.plot(r_times[idx], r['array'], label=r['name'], marker=mark)
+                        vplot.plot(r_times[idx], r['array'] if not norm else r['array'] / np.amax(r['array']), label=r['name'], marker=mark)
 	vplot.set_xlabel("N")
 	vplot.set_ylabel("Value")
 	vplot.legend()
@@ -59,10 +60,10 @@ def showplots(v, references=None, logfft=False, marker=False, grid=False):
 
 	fplot = plot.subplot(212)
 
-	fplot.plot(freqs, v_fft, label=str(fft_len) + '-point FFT(' + v['name'] + ')')
+	fplot.plot(freqs, v_fft if not fftnorm else v_fft / np.amax(v_fft), label=str(fft_len) + '-point FFT(' + v['name'] + ')')
 	if references is not None:
                 for idx, r, r_fft in zip(range(0, len(r_ffts)), references, r_ffts):
-		        fplot.plot(freqs, r_fft, label=str(fft_len) + '-point FFT(' + r['name'] + ')')
+		        fplot.plot(freqs, r_fft if not fftnorm else r_fft / np.amax(r_fft), label=str(fft_len) + '-point FFT(' + r['name'] + ')')
 
 	fplot.set_xlabel("Normalized frequency")
 	if logfft:
@@ -75,7 +76,6 @@ def showplots(v, references=None, logfft=False, marker=False, grid=False):
 	fplot.grid(b=True, which='major', color='b', linestyle='--')
 	fplot.grid(b=True, which='minor', color='r', linestyle='--')
 	fplot.set_axisbelow(False)
-
 
 	plot.show()
 
@@ -125,19 +125,31 @@ def showplots(v, references=None, logfft=False, marker=False, grid=False):
 #time = np.arange(0, 40, 0.1)
 #values = np.sin(time) + 0.5 * np.sin(2 * time) + 0.25 * np.sin(4 * time) + 0.33 * np.sin(8 * time)
 
-numtaps = 128 
-expansion = 16
-decimation = 11 
-cutoff_ex = 1/float(expansion)
 
-low_ex = np.arange(-(numtaps / (2.0 * expansion)) * np.pi, 0, (numtaps / (2.0 * expansion)) * np.pi / (numtaps / 2.0))
-sinc_ex = np.sin(low_ex)/low_ex
-sinc_ex_filter = sinc_ex
-sinc_ex_filter = np.concatenate((sinc_ex_filter, np.full(1, 1)))
-sinc_ex_filter = np.concatenate((sinc_ex_filter, np.flip(sinc_ex)))
-sinc_ex_filter = sinc_ex_filter[0:len(sinc_ex_filter) - 1]
+def sinc_filter(numtaps, factor):
+    low = np.arange(-(numtaps / (2.0 * factor)) * np.pi, 0, (numtaps / (2.0 * factor)) * np.pi / (numtaps / 2.0))
+    sinc = np.sin(low)/low
+    sinc_filter = sinc
+    sinc_filter = np.concatenate((sinc_filter, np.full(1, 1)))
+    sinc_filter = np.concatenate((sinc_filter, np.flip(sinc)))
+    sinc_filter = sinc_filter[0:len(sinc_filter) - 1]
 
-showplots({'array': sinc_ex_filter, 'name': 'cutoff: ' + str(cutoff_ex)}, logfft=False, marker=False, grid=False)
+    return sinc_filter
+
+def gcd(x, y):
+   while(y):
+       x, y = y, x % y
+   return x
+
+numtaps = 256
+w = 100
+sw = 400
+factor = gcd(w, sw)
+expansion = sw / factor
+decimation = w / factor
+
+print expansion
+print decimation
 
 seed = np.asarray([0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1, 0.875, 0.75, 0.625, 0.5, 0.375, 0.25, 0.125])
 values = seed
@@ -145,46 +157,60 @@ values = np.concatenate((values, seed))
 values = np.concatenate((values, seed))
 values = np.concatenate((values, seed))
 values = np.concatenate((values, np.zeros(36)))
-values += 0.25 * np.sin(np.arange(0, 1000, 10))
+values = np.concatenate((values, seed))
+values = np.concatenate((values, seed))
+values = np.concatenate((values, np.zeros(18)))
+values += 0.25 * np.sin(np.arange(0, 1500, 10))
 
-interl = np.zeros(values.shape[0] * expansion, dtype=values.dtype)
-interl[0::expansion] = values
+sinc_f = sinc_filter(numtaps, max(expansion, decimation))
 
-showplots({'array': values, 'name': 'base'}, references=[{'array' : interl, 'name' : 'upsampled x ' + str(expansion), 'align' : True}], logfft=False, marker=True, grid=False)
-
-
-
-upsl = np.convolve(sinc_ex_filter, interl)
-showplots({'array': upsl, 'name': 'upsampled-filtered'}, references=[
-    {'array' : interl, 'name' : 'upsampled', 'align' : False},
-    {'array' : values, 'name' : 'base', 'align' : False}], logfft=False, marker=False, grid=True)
-
-cutoff_dec = 1/float(decimation)
-
-low_dec = np.arange(-(numtaps / (2.0 * decimation)) * np.pi, 0, (numtaps / (2.0 * decimation)) * np.pi / (numtaps / 2.0))
-sinc_dec = np.sin(low_dec)/low_dec
-sinc_dec_filter = sinc_dec
-sinc_dec_filter = np.concatenate((sinc_dec_filter, np.full(1, 1)))
-sinc_dec_filter = np.concatenate((sinc_dec_filter, np.flip(sinc_dec)))
-sinc_dec_filter = sinc_dec_filter[0:len(sinc_dec_filter) - 1]
-
-showplots({'array': sinc_dec_filter, 'name': 'cutoff: ' + str(cutoff_dec)}, logfft=False, marker=False, grid=False)
-
-out = np.convolve(values, sinc_dec_filter)
-showplots({'array':out, 'name':'anti-aliased'}, references=[{'array':values, 'name':'orig', 'align':False}])
-
-subl = out[0::decimation]
-showplots({'array': values, 'name': 'base'}, references=[{'array' : subl, 'name' : 'subsampled x ' + str(decimation), 'align' : False}], logfft=False, marker=True, grid=False)
-
-sinc_f = np.convolve(sinc_dec_filter, sinc_ex_filter)
-
-showplots({'array': sinc_f, 'name': 'scale_filter'}, logfft=False, marker=True, grid=True)
+#showplots({'array': sinc_f, 'name': 'filter'}, logfft=False, marker=True, grid=False)
 
 part_interl = np.zeros(values.shape[0] * expansion, dtype=values.dtype)
 part_interl[0::expansion] = values
 
-part_f = np.convolve(part_interl, sinc_f)
+part_f = np.convolve(part_interl, sinc_f, mode='same')
+
+print sinc_f.shape
+print part_f.shape
+print part_interl.shape
 
 final = part_f[0::decimation]
+print final.shape
 
-showplots({'array': final, 'name': 'scaled'}, logfft=False, marker=False, grid=False)
+#showplots({'array': values, 'name': 'base'}, references=[{'array': final, 'name':'final', 'align':True}], logfft=False, marker=True, grid=False)
+
+y = sinc_f
+x = np.zeros(part_interl.shape[0])
+for idx in range(0, len(x)):
+    lidx = idx - len(y) / 2
+    if lidx < 0:
+        e = np.concatenate((np.zeros(-lidx), part_interl[0:lidx + len(y)]))
+    elif lidx + len(y) > len(x):
+        e = np.concatenate((part_interl[lidx:len(x)], np.zeros(len(y) - (len(x) - lidx))))
+    else:
+        e = part_interl[lidx:lidx + len(y)]
+
+    x[idx] = np.sum(np.flip(y) * e)
+
+#showplots({'array': x, 'name': 'crude'}, references=[{'array': part_f, 'align':False, 'name':'filtered'}], logfft=False, marker=True, grid=False)
+
+xfact = 2 
+sinc_f2 = sinc_filter(xfact * 5, 8)
+showplots({'array': sinc_f2, 'name': 'filter'}, logfft=False, marker=True, grid=False)
+fbanks = []
+
+for idx in range(0, xfact):
+    fbanks.append(np.asarray(sinc_f2[idx::xfact]))
+
+
+f2 = np.zeros(len(values) * xfact)
+for idx in range(0, xfact):
+    f2[idx::xfact] = np.convolve(values, fbanks[idx], mode='same')
+
+fd = np.zeros(values.shape[0] * xfact, dtype=values.dtype)
+fd[0::xfact] = values 
+fd = np.convolve(fd, sinc_f2, mode='same')
+
+showplots({'array': fd[0:len(fd)], 'name': 'crude'}, references=[{'array': f2[xfact - 1:len(f2)], 'align':False, 'name':'banked'}], logfft=False, marker=True, grid=False)
+
