@@ -196,7 +196,7 @@ for idx in range(0, len(x)):
 #showplots({'array': x, 'name': 'crude'}, references=[{'array': part_f, 'align':False, 'name':'filtered'}], logfft=False, marker=True, grid=False)
 
 xfact = 2 
-sinc_f2 = sinc_filter(xfact * 5, 8)
+sinc_f2 = sinc_filter(xfact * 5, xfact)
 showplots({'array': sinc_f2, 'name': 'filter'}, logfft=False, marker=True, grid=False)
 fbanks = []
 
