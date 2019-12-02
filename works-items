@@ -6,3 +6,10 @@ rewrite a permuter, do most of the things using cpp templates
 
 write a convenience C wrapper on getopt()
 
+why blocking artifacts in resample?
+what is the effective num-taps to scaling-factor to quantization ratio?
+what can be an effective MxN matrix?
+	What if M or N is not SIMD-friendly?
+	How to do vector multiplications in that case?
+How to write an address generator?
+	How to do sparse loads?

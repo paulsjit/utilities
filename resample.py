@@ -11,27 +11,27 @@ def showplots(v, references=None, logfft=False, marker=False, grid=False, norm=F
 	if v['array'].shape[0] > fft_len:
 		raise Exception('Signal too large')
 
-        if references is not None and all (x for x in map(lambda x: x['array'].shape[0] > fft_len, references)):
+	if references is not None and all (x for x in map(lambda x: x['array'].shape[0] > fft_len, references)):
 		raise Exception('Reference signal too large')
 
 	v_fft = np.abs(fft(v['array'], n=fft_len))
 	if logfft:
 		v_fft = np.log10(v_fft)
 
-        r_ffts = []
-        r_times = []
+	r_ffts = []
+	r_times = []
 	if references is not None:
-                for r in references:
-                        r_fft = np.abs(fft(r['array'], n=fft_len))
-		        if logfft:
-			        r_fft = np.log10(r_fft)
+		for r in references:
+			r_fft = np.abs(fft(r['array'], n=fft_len))
+			if logfft:
+				r_fft = np.log10(r_fft)
 
-                        r_ffts.append(r_fft)
+			r_ffts.append(r_fft)
 
-                        if not r['align']:
-                                r_times.append(np.arange(0, r['array'].shape[0], 1))
-                        else:
-                                r_times.append(np.arange(0, v['array'].shape[0], v['array'].shape[0] / float(r['array'].shape[0])))
+			if not r['align']:
+				r_times.append(np.arange(0, r['array'].shape[0], 1))
+			else:
+				r_times.append(np.arange(0, v['array'].shape[0], v['array'].shape[0] / float(r['array'].shape[0])))
 
 	freqs = np.arange(-1, 1, 2.0 / fft_len)
 	
@@ -44,13 +44,13 @@ def showplots(v, references=None, logfft=False, marker=False, grid=False, norm=F
 	vplot = plot.subplot(211)
 
 	vplot.plot(np.arange(0, v['array'].shape[0], 1), v['array'] if not norm else v['array'] / np.amax(v['array']), label=v['name'], marker=mark)
-        if references is not None:
-                for idx, r in zip(range(0, len(references)), references):
-                        vplot.plot(r_times[idx], r['array'] if not norm else r['array'] / np.amax(r['array']), label=r['name'], marker=mark)
+	if references is not None:
+		for idx, r in zip(range(0, len(references)), references):
+			vplot.plot(r_times[idx], r['array'] if not norm else r['array'] / np.amax(r['array']), label=r['name'], marker=mark)
 	vplot.set_xlabel("N")
 	vplot.set_ylabel("Value")
 	vplot.legend()
-        vplot.axhline(color='black', linestyle='--', linewidth=0.5)
+	vplot.axhline(color='black', linestyle='--', linewidth=0.5)
 
 	if grid:
 		vplot.minorticks_on()
@@ -62,8 +62,8 @@ def showplots(v, references=None, logfft=False, marker=False, grid=False, norm=F
 
 	fplot.plot(freqs, v_fft if not fftnorm else v_fft / np.amax(v_fft), label=str(fft_len) + '-point FFT(' + v['name'] + ')')
 	if references is not None:
-                for idx, r, r_fft in zip(range(0, len(r_ffts)), references, r_ffts):
-		        fplot.plot(freqs, r_fft if not fftnorm else r_fft / np.amax(r_fft), label=str(fft_len) + '-point FFT(' + r['name'] + ')')
+		for idx, r, r_fft in zip(range(0, len(r_ffts)), references, r_ffts):
+			fplot.plot(freqs, r_fft if not fftnorm else r_fft / np.amax(r_fft), label=str(fft_len) + '-point FFT(' + r['name'] + ')')
 
 	fplot.set_xlabel("Normalized frequency")
 	if logfft:
@@ -148,8 +148,8 @@ factor = gcd(w, sw)
 expansion = sw / factor
 decimation = w / factor
 
-print expansion
-print decimation
+print(expansion)
+print(decimation)
 
 seed = np.asarray([0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1, 0.875, 0.75, 0.625, 0.5, 0.375, 0.25, 0.125])
 values = seed
@@ -171,12 +171,12 @@ part_interl[0::expansion] = values
 
 part_f = np.convolve(part_interl, sinc_f, mode='same')
 
-print sinc_f.shape
-print part_f.shape
-print part_interl.shape
+print(sinc_f.shape)
+print(part_f.shape)
+print(part_interl.shape)
 
 final = part_f[0::decimation]
-print final.shape
+print(final.shape)
 
 #showplots({'array': values, 'name': 'base'}, references=[{'array': final, 'name':'final', 'align':True}], logfft=False, marker=True, grid=False)
 
