@@ -13,3 +13,6 @@ what can be an effective MxN matrix?
 	How to do vector multiplications in that case?
 How to write an address generator?
 	How to do sparse loads?
+
+bilinear / bicubic to start with
+or should I find the mathematical relationship for a generalized user filter? Sets explore
