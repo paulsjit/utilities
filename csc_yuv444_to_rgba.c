@@ -515,7 +515,7 @@ perf_loop:
 	write(ofd, obuf, osize);
 	close(ofd);
 
-	if(pid = fork()) {
+	if(!(pid = fork())) {
 		char *res;
 
 		close(2);
@@ -527,6 +527,12 @@ perf_loop:
 				"rawvideo", "-pix_fmt", "rgba", "-s",
 				res, "-i", temp_name, "-f", "image2", "-vcodec",
 				"png", oname, NULL);
+	} else {
+		waitpid(pid, NULL, 0);
+	}
+
+	if(!(pid = fork())) {
+		execlp("gnome-open", "gnome-open", oname, NULL);
 	} else {
 		waitpid(pid, NULL, 0);
 	}

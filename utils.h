@@ -66,7 +66,7 @@ static inline char *arsprintf(const char *fmt, ...)
 	char *str, *ret = NULL;
 	va_list ap;
 	va_start(ap, fmt);
-	if(vasprintf(&ret, fmt, ap) != -1) {
+	if(vasprintf(&str, fmt, ap) != -1) {
 		ret = strdup(str);
 		free(str);
 		goto out;

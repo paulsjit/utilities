@@ -316,4 +316,19 @@ int main(int argc, char **argv) {
 	write(ofd, out_data, osize);
 	close(ofd);
 
+	pid_t pid;
+	if(!(pid = fork())) {
+		char *res;
+
+		close(2);
+		close(3);
+
+		execlp("./csc_yuv444_to_rgba", "./csc_yuv444_to_rgba",
+				"-f", arsprintf("%s-scaled", filename_common),
+				"-w", arsprintf("%d", out_width),
+				"-h", arsprintf("%d", out_height), "-s",
+				NULL);
+	} else {
+		waitpid(pid, NULL, 0);
+	}
 }
