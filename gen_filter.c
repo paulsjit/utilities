@@ -1,3 +1,56 @@
+/*
+ * Remember: i_sf = ceil(f_sf), i.e., for upscale: ceil(f_out / f_in), for downscale: ceil (f_in / f_out)
+ * num_phases = i_sf * pG
+ * phase increases by num_phases * (1 / f_sf), modulo num_phases, it will never go beyond or equal to num_phases
+ * so, if f_sf = 1, 2, 3 etc, sf = 1, 2, 3 respectively
+ *     phase will propagate as (0, 0, ...), (0, pG, 0, pG, ...), (0, pG, 2 * pG, 0, pG, 2 * pG, ...) respectively
+ * if f_sf = say, 1.7 (=17 / 10), sf = 2, and phase will propagate as 
+ *     [
+ *       pG * 0.000,
+ *       pG * 1.176,
+ *       pG * 0.353 [rolled off from pG * 4.353],
+ *       pG * 1.529,
+ *       pG * 0.706,
+ *       pG * 1.882,
+ *       pG * 1.059,
+ *       pG * 0.235,
+ *       pG * 1.412,
+ *       pG * 0.588,
+ *       pG * 1.765,
+ *       pG * 0.941,
+ *       pG * 0.118,
+ *       pG * 1.294,
+ *       pG * 0.471,
+ *       pG * 1.647,
+ *       pG * 0.823,
+ *       pG * 0.000 [roll back to 0 at 17]
+ *     ]
+ * When this is quantized, with say pG = 4, it will be
+ *     [
+ *       0,
+ *       5,
+ *       1,
+ *       6,
+ *       3,
+ *       0, [quantized to 0]
+ *       4,
+ *       1,
+ *       6,
+ *       2,
+ *       7,
+ *       4,
+ *       0, [quantized to 0]
+ *       5,
+ *       2,
+ *       7,
+ *       3,
+ *       0 [true 0 at 17]
+ *     ]
+ *
+ * the pixels are always indiced by round(o_pixel / f_sf)
+ */
+
+
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
