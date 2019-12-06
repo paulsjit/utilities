@@ -209,9 +209,6 @@ double **gen_filter(char *type, int bank_numtaps, int num_phases)
 
 		for(int k = 0; k < bank_numtaps; k++) {
 			int idx = k - bank_numtaps / 2;
-			if(!(bank_numtaps % 2) && bank_numtaps != 2)
-				idx++;
-
 			bank[k] = func(p / (double)num_phases, idx);
 		}
 	}
@@ -250,6 +247,13 @@ int16_t **mat(int16_t *v, int vn, int vq, int16_t *h, int hn, int hq, int q)
 	return ret;
 }
 
+void calculate_phase_info(int out_loc, int *in_loc, int *phase, int out_len, int in_len, int num_phases)
+{
+	double f_phase = out_loc * num_phases * (in_len / (double)out_len);
+	*phase = ((int)round(f_phase)) % num_phases;
+	*in_loc = out_loc * (in_len / (double)out_len);
+}
+
 int main(int argc, char **argv) {
 	int i, j;
 	int ifd, ofd;
@@ -265,10 +269,10 @@ int main(int argc, char **argv) {
 	uint8_t *in_data, *out_data, *mid_data;
 	char *filename_common = NULL, *iname, *oname;
 	char *type_h = "sinc", *type_v = "sinc";
-	int sf_h = -1, num_phases_h, sf_v = -1, num_phases_v;
+	int sf_h, num_phases_h, sf_v, num_phases_v;
 	bool conv_2d = false, print_filters = false;
 
-	while((opt = getopt(argc, argv, "f:w:h:W:H:b:B:q:Q:g:G:s:S:t:T:m:v")) != -1) {
+	while((opt = getopt(argc, argv, "f:w:h:W:H:b:B:q:Q:g:G:t:T:mv")) != -1) {
 		switch(opt) {
 			case 'f':
 				filename_common = optarg;
@@ -305,12 +309,6 @@ int main(int argc, char **argv) {
 			case 'G':
 				phase_gran_v = atoi(optarg);
 				break;
-			case 's':
-				sf_h = atoi(optarg);
-				break;
-			case 'S':
-				sf_v = atoi(optarg);
-				break;
 			case 't':
 				type_h = optarg;
 				break;
@@ -329,6 +327,8 @@ int main(int argc, char **argv) {
 		}
 	}
 
+	sf_h = (out_width > in_width) ? (int)ceil(out_width / (double)in_width) : (int)ceil(in_width / (double)out_width);
+	sf_v = (out_height > in_height) ? (int)ceil(out_height / (double)in_height) : (int)ceil(in_height / (double)out_height);
 	num_phases_h = sf_h * phase_gran_h;
 	num_phases_v = sf_v * phase_gran_v;
 
@@ -400,10 +400,8 @@ execute:
 
 	for(i = 0; i < in_height; i++) {
 		for(j = 0; j < out_width; j++) {
-			int in_pixel = (int)(j * (in_width / (double)out_width));
-			double phase_diff = j - in_pixel * (out_width / (double)in_width);
-			int iphase = (int)round(phase_diff * (num_phases_h / sf_h));
-
+			int in_pixel, iphase;
+			calculate_phase_info(j, &in_pixel, &iphase, out_width, in_width, num_phases_h);
 
 			mid_data[i * out_width + j] = convolve_one_uint8_t(banks_h[iphase], h_bank_len, in_data + i * in_width, in_width, 1, in_pixel, quant_h);
 			mid_data[out_width * in_height + i * out_width + j] = convolve_one_uint8_t(banks_h[iphase], h_bank_len, in_data + in_width * in_height + i * in_width, in_width, 1, in_pixel, quant_h);
@@ -413,10 +411,8 @@ execute:
 
 	for(i = 0; i < out_width; i++) {
 		for(j = 0; j < out_height; j++) {
-			int in_pixel = (int)(j * (in_height / (double)out_height));
-			double phase_diff = j - in_pixel * (out_height / (double)in_height);
-			int iphase = (int)round(phase_diff * (num_phases_v / sf_v));
-
+			int in_pixel, iphase;
+			calculate_phase_info(j, &in_pixel, &iphase, out_height, in_height, num_phases_v);
 
 			out_data[j * out_width + i] = convolve_one_uint8_t(banks_v[iphase], v_bank_len, mid_data + i, in_height, out_width, in_pixel, quant_v);
 			out_data[out_width * out_height + j * out_width + i] = convolve_one_uint8_t(banks_v[iphase], v_bank_len, mid_data + out_width * in_height + i, in_height, out_width, in_pixel, quant_v);
@@ -429,13 +425,11 @@ execute:
 convolute_2d:
 	for(i = 0; i < out_height; i++) {
 		for(j = 0; j < out_width; j++) {
-			int in_pixel_h = (int)(j * (in_width / (double)out_width));
-			double phase_diff_h = j - in_pixel_h * (out_width / (double)in_width);
-			int iphase_h = (int)round(phase_diff_h * (num_phases_h / sf_h));
+			int in_pixel_h, iphase_h;
+			int in_pixel_v, iphase_v;
 
-			int in_pixel_v = (int)(i * (in_height / (double)out_height));
-			double phase_diff_v = i - in_pixel_v * (out_height / (double)in_height);
-			int iphase_v = (int)round(phase_diff_v * (num_phases_v / sf_v));
+			calculate_phase_info(j, &in_pixel_h, &iphase_h, out_width, in_width, num_phases_h);
+			calculate_phase_info(i, &in_pixel_v, &iphase_v, out_height, in_height, num_phases_v);
 
 			int16_t **bank = mat(banks_v[iphase_v], v_bank_len, quant_v, banks_h[iphase_h], h_bank_len, quant_h, 6);
 
