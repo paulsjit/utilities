@@ -60,6 +60,27 @@ uint8_t convolve_one_uint8_t(int16_t *filter, uint32_t filter_len, uint8_t *in,
 	return clamp_uint8_t(out >> shift);
 }
 
+uint8_t convolve_one_uint8_t_2d(int16_t **filter, uint32_t filter_len_v, uint32_t filter_len_h, uint8_t *in,
+		uint32_t data_len_v, uint32_t data_len_h, uint32_t data_stride_v, uint32_t data_stride_h,
+		uint32_t data_index_v, uint32_t data_index_h, uint32_t shift)
+{
+	int iv, jv, ih, jh;
+	uint16_t out = 0;
+
+	for(iv = data_index_v - filter_len_v / 2, jv = 0; jv < filter_len_v; iv++, jv++) {
+		int16_t *filter_one = filter[filter_len_v - jv - 1];
+		uint8_t *in_one = &in[iv * data_stride_v];
+
+		for(ih = data_index_h - filter_len_h / 2, jh = 0; jh < filter_len_h; ih++, jh++) {
+			if(iv < 0 || iv >= data_len_v || ih < 0 || ih >= data_len_h)
+				continue;
+			out += (in_one[ih * data_stride_h] * filter_one[filter_len_h - jh - 1]);
+		}
+	}
+	return clamp_uint8_t(out >> shift);
+}
+
+
 double sinc(double x)
 {
 	if (x == 0)
@@ -135,7 +156,7 @@ double **gen_filter(char *type, int bank_numtaps, int num_phases)
 
 		for(int k = 0; k < bank_numtaps; k++) {
 			int idx = k - bank_numtaps / 2;
-			if(!(bank_numtaps % 2))
+			if(!(bank_numtaps % 2) && bank_numtaps != 2)
 				idx++;
 
 			bank[k] = func(p / (double)num_phases, idx);
@@ -162,6 +183,20 @@ int16_t **quantize_filter_int16_t(double **coeffs, uint32_t numtaps, uint32_t ma
 
 #define MAX_PHASES (320)
 
+int16_t **mat(int16_t *v, int vn, int vq, int16_t *h, int hn, int hq, int q)
+{
+	int i, j;
+	int16_t **ret = malloc(vn * sizeof(int16_t *));
+	for(i = 0; i < vn; i++) {
+		ret[i] = malloc(hn * sizeof(int16_t));
+		for(j = 0; j < hn; j++) {
+			ret[i][j] = (int16_t)(((v[i] / (double)(1 << vq))  * (h[j] / (double)(1 << hq))) * (1 << q));
+		}
+	}
+
+	return ret;
+}
+
 int main(int argc, char **argv) {
 	int i, j;
 	int ifd, ofd;
@@ -178,8 +213,9 @@ int main(int argc, char **argv) {
 	char *filename_common = NULL, *iname, *oname;
 	char *type_h = "sinc", *type_v = "sinc";
 	int sf_h = -1, num_phases_h, sf_v = -1, num_phases_v;
+	bool conv_2d = false, print_filters = false;
 
-	while((opt = getopt(argc, argv, "f:w:h:W:H:b:B:q:Q:g:G:s:S:t:T:")) != -1) {
+	while((opt = getopt(argc, argv, "f:w:h:W:H:b:B:q:Q:g:G:s:S:t:T:m:v")) != -1) {
 		switch(opt) {
 			case 'f':
 				filename_common = optarg;
@@ -228,6 +264,12 @@ int main(int argc, char **argv) {
 			case 'T':
 				type_v = optarg;
 				break;
+			case 'm':
+				conv_2d = true;
+				break;
+			case 'v':
+				print_filters = true;
+				break;
 			default:
 				printf("unsupported option %c\n", opt);
 				exit(0);
@@ -265,8 +307,9 @@ int main(int argc, char **argv) {
 	osize = out_height * out_width * 3;
 
 	posix_memalign((void **)&in_data, 32, isize);
-	posix_memalign((void **)&mid_data, 32, msize);
 	posix_memalign((void **)&out_data, 32, osize);
+	if(!conv_2d)
+		posix_memalign((void **)&mid_data, 32, msize);
 
 	read(ifd, in_data, isize);
 	close(ifd);
@@ -277,15 +320,30 @@ int main(int argc, char **argv) {
 	banks_d_v = gen_filter(type_v, v_bank_len, num_phases_v);
 	banks_v = quantize_filter_int16_t(banks_d_v, v_bank_len, num_phases_v, 1 << quant_v);
 
-	/*for(i = 0; i < max_phases; i++) {
-		printf("bank[%3u] : [", i);
-		for(j = 0; j < bank_n; j++)
-			printf("% 1.6lf%s", banks_d[i][j], j == bank_n - 1 ? "] / [" : " ");
-		for(j = 0; j < bank_n; j++)
-			printf("% 3d%s", banks[i][j], j == bank_n - 1 ? "]" : " ");
-		printf("\n");
-	}*/
+	if(!print_filters)
+		goto execute;
 
+	for(i = 0; i < num_phases_h; i++) {
+		printf("hbank[%3u] : [", i);
+		for(j = 0; j < h_bank_len; j++)
+			printf("% 1.6lf%s", banks_d_h[i][j], j == h_bank_len - 1 ? "] / [" : " ");
+		for(j = 0; j < h_bank_len; j++)
+			printf("% 3d%s", banks_h[i][j], j == h_bank_len - 1 ? "]" : " ");
+		printf("\n");
+	}
+
+	for(i = 0; i < num_phases_v; i++) {
+		printf("vbank[%3u] : [", i);
+		for(j = 0; j < v_bank_len; j++)
+			printf("% 1.6lf%s", banks_d_v[i][j], j == v_bank_len - 1 ? "] / [" : " ");
+		for(j = 0; j < v_bank_len; j++)
+			printf("% 3d%s", banks_v[i][j], j == v_bank_len - 1 ? "]" : " ");
+		printf("\n");
+	}
+
+execute:
+	if(conv_2d)
+		goto convolute_2d;
 
 	for(i = 0; i < in_height; i++) {
 		for(j = 0; j < out_width; j++) {
@@ -313,6 +371,34 @@ int main(int argc, char **argv) {
 		}
 	}
 
+	goto done;
+
+convolute_2d:
+	for(i = 0; i < out_height; i++) {
+		for(j = 0; j < out_width; j++) {
+			int in_pixel_h = (int)(j * (in_width / (double)out_width));
+			double phase_diff_h = j - in_pixel_h * (out_width / (double)in_width);
+			int iphase_h = (int)round(phase_diff_h * (num_phases_h / sf_h));
+
+			int in_pixel_v = (int)(i * (in_height / (double)out_height));
+			double phase_diff_v = i - in_pixel_v * (out_height / (double)in_height);
+			int iphase_v = (int)round(phase_diff_v * (num_phases_v / sf_v));
+
+			int16_t **bank = mat(banks_v[iphase_v], v_bank_len, quant_v, banks_h[iphase_h], h_bank_len, quant_h, 6);
+
+			out_data[i * out_width + j] = convolve_one_uint8_t_2d(bank, v_bank_len, h_bank_len, in_data,
+					in_height, in_width, in_width, 1, in_pixel_v, in_pixel_h, 6);
+			out_data[out_width * out_height + i * out_width + j] = convolve_one_uint8_t_2d(bank,
+					v_bank_len, h_bank_len, in_data + in_width * in_height,
+					in_height, in_width, in_width, 1, in_pixel_v, in_pixel_h, 6);
+			out_data[2 * out_width * out_height + i * out_width + j] = convolve_one_uint8_t_2d(bank,
+					v_bank_len, h_bank_len, in_data + 2 * in_width * in_height,
+					in_height, in_width, in_width, 1, in_pixel_v, in_pixel_h, 6);
+
+		}
+	}
+done:
+
 	write(ofd, out_data, osize);
 	close(ofd);
 
@@ -326,7 +412,7 @@ int main(int argc, char **argv) {
 		execlp("./csc_yuv444_to_rgba", "./csc_yuv444_to_rgba",
 				"-f", arsprintf("%s-scaled", filename_common),
 				"-w", arsprintf("%d", out_width),
-				"-h", arsprintf("%d", out_height), "-s",
+				"-h", arsprintf("%d", out_height), "-s", "-m",
 				NULL);
 	} else {
 		waitpid(pid, NULL, 0);
