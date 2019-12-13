@@ -6,8 +6,6 @@
 #include <time.h>
 #include <unistd.h>
 #include <pthread.h>
-#include <X11/Xlib.h>
-#include <X11/Xutil.h>
 #include <immintrin.h>
 #include <sys/wait.h>
 
