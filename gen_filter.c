@@ -61,7 +61,14 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <assert.h>
+#include <time.h>
 #include "utils.h"
+
+struct hist {
+	uint64_t min;
+	uint64_t max;
+	int count;
+};
 
 static inline uint8_t clamp_uint8_t(uint16_t in)
 {
@@ -79,22 +86,6 @@ static inline int8_t clamp_int8_t(int16_t in)
 	else if(in < -128)
 		return -128;
 	return in;
-}
-
-int8_t convolve_one_int8_t(int16_t *filter, uint32_t filter_len, int8_t *in,
-		uint32_t data_len, uint32_t data_stride, uint32_t data_index,
-		uint32_t shift)
-{
-	int i, j;
-	int16_t out = 0;
-
-	for(i = data_index - filter_len / 2, j = 0; j < filter_len; i++, j++) {
-		if(i < 0 || i >= data_len)
-			continue;
-		out += (in[i * data_stride] * filter[filter_len - j -1]);
-	}
-
-	return clamp_int8_t(out >> shift);
 }
 
 uint8_t convolve_one_uint8_t(int16_t *filter, uint32_t filter_len, uint8_t *in,
@@ -216,42 +207,52 @@ double **gen_filter(char *type, int bank_numtaps, int num_phases)
 	return banks;
 }
 
-int16_t **quantize_filter_int16_t(double **coeffs, uint32_t numtaps, uint32_t max_phases,
+int16_t **quantize_filter_int16_t(double **coeffs, uint32_t numtaps, uint32_t num_phases,
 		uint16_t quantization_cap)
 {
 	int i, j;
-	int16_t **int_coeffs = calloc(sizeof(int16_t *), max_phases);
+	int16_t **int_coeffs = calloc(sizeof(int16_t *), num_phases);
 
-	for(i = 0; i < max_phases; i++) {
+	for(i = 0; i < num_phases; i++) {
 		int_coeffs[i] = calloc(numtaps, sizeof(int16_t));
 		for(j = 0; j < numtaps; j++)
-			int_coeffs[i][j] = (int16_t)(coeffs[i][j] * quantization_cap);
+			int_coeffs[i][j] = (int16_t)round(coeffs[i][j] * quantization_cap);
 	}
 
 	return int_coeffs;
 }
 
-#define MAX_PHASES (320)
-
-int16_t **mat(int16_t *v, int vn, int vq, int16_t *h, int hn, int hq, int q)
+int16_t **mat(double *v, int vn, double *h, int hn, int q)
 {
 	int i, j;
+	double sum = 0;
 	int16_t **ret = malloc(vn * sizeof(int16_t *));
+	for(i = 0; i < vn; i++)
+		for(j = 0; j < hn; j++)
+			sum += v[i] * h[j];
+
 	for(i = 0; i < vn; i++) {
 		ret[i] = malloc(hn * sizeof(int16_t));
 		for(j = 0; j < hn; j++) {
-			ret[i][j] = (int16_t)(((v[i] / (double)(1 << vq))  * (h[j] / (double)(1 << hq))) * (1 << q));
+			ret[i][j] = (int16_t)round(((v[i] * h[j]) / sum) * q);
 		}
 	}
 
 	return ret;
 }
 
-void calculate_phase_info(int out_loc, int *in_loc, int *phase, int out_len, int in_len, int num_phases)
+void calculate_phase_info_float(int out_loc, int *in_loc, int *phase, int out_len, int in_len, int num_phases)
 {
-	double f_phase = out_loc * num_phases * (in_len / (double)out_len);
-	*phase = ((int)round(f_phase)) % num_phases;
-	*in_loc = out_loc * (in_len / (double)out_len);
+	double FIR = ((double)in_len) / out_len;
+	*phase = (int)(round((out_loc * num_phases * FIR))) % num_phases;
+	*in_loc = out_loc * FIR;
+}
+
+void calculate_phase_info_int(int out_loc, int *in_loc, int *phase, int out_len, int in_len, int num_phases)
+{
+	int FIR = (in_len << 10) / out_len;
+	*phase = ((out_loc * num_phases * FIR) >> 10) % num_phases;
+	*in_loc = (out_loc * FIR) >> 10;
 }
 
 int main(int argc, char **argv) {
@@ -271,8 +272,28 @@ int main(int argc, char **argv) {
 	char *type_h = "sinc", *type_v = "sinc";
 	int sf_h, num_phases_h, sf_v, num_phases_v;
 	bool conv_2d = false, print_filters = false;
+	bool use_multithread = false;
+	long number_of_processors = sysconf(_SC_NPROCESSORS_ONLN);
+	struct chunk *chunks;
+	int num_chunks = 0;
+	pthread_t *ths = NULL;
+	int16_t ***banks_hv = NULL;
+	int iter = 1, iter_cnt = 0;;
+	uint64_t max_nsecs_diff = 0;
+	uint64_t min_nsecs_diff = 0xffffffffffffffffull;
+	uint64_t avg_nsecs_diff = 0;
+	int nsecs_bucket_cnt = 32;
+	uint64_t min_diff = 0;
+	uint64_t max_diff = 32000000ull;
+	uint64_t diff_delta = (uint64_t)((max_diff - min_diff) / (float)nsecs_bucket_cnt);
+	struct hist *nsecs_buckets;
+	struct timespec start, end;
+	int cnt;
+	void (*phase_info_calc_func)(int, int *, int *, int, int, int);
 
-	while((opt = getopt(argc, argv, "f:w:h:W:H:b:B:q:Q:g:G:t:T:mv")) != -1) {
+	phase_info_calc_func = calculate_phase_info_float;
+
+	while((opt = getopt(argc, argv, "1f:w:h:W:H:b:B:q:Q:g:G:t:T:2vmi:")) != -1) {
 		switch(opt) {
 			case 'f':
 				filename_common = optarg;
@@ -316,10 +337,19 @@ int main(int argc, char **argv) {
 				type_v = optarg;
 				break;
 			case 'm':
+				use_multithread = true;
+				break;
+			case '2':
 				conv_2d = true;
 				break;
 			case 'v':
 				print_filters = true;
+				break;
+			case 'i':
+				iter = atoi(optarg);
+				break;
+			case '1':
+				phase_info_calc_func = calculate_phase_info_int;
 				break;
 			default:
 				printf("unsupported option %c\n", opt);
@@ -327,12 +357,10 @@ int main(int argc, char **argv) {
 		}
 	}
 
-	sf_h = (out_width > in_width) ? (int)ceil(out_width / (double)in_width) : (int)ceil(in_width / (double)out_width);
-	sf_v = (out_height > in_height) ? (int)ceil(out_height / (double)in_height) : (int)ceil(in_height / (double)out_height);
-	num_phases_h = sf_h * phase_gran_h;
-	num_phases_v = sf_v * phase_gran_v;
+	if(number_of_processors % 2)
+		use_multithread = false;
 
-	if(!filename_common || in_width == -1 || in_height == -1 || sf_h == -1 || sf_v == -1) {
+	if(!filename_common || in_width == -1 || in_height == -1) {
 		printf("missing one or more mandatory options: \"-f filename-prefix\", \"-h <height>\", \"-w <width>\", \"-s <h scaling factor>\", \"-S <v scaling factor>\"\n");
 		exit(0);
 	}
@@ -342,6 +370,11 @@ int main(int argc, char **argv) {
 
 	if(out_height == -1)
 		out_height = in_height;
+
+	sf_h = (out_width > in_width) ? (int)ceil(out_width / (double)in_width) : (int)ceil(in_width / (double)out_width);
+	sf_v = (out_height > in_height) ? (int)ceil(out_height / (double)in_height) : (int)ceil(in_height / (double)out_height);
+	num_phases_h = sf_h * phase_gran_h;
+	num_phases_v = sf_v * phase_gran_v;
 
 	ifd = open(iname, O_RDONLY);
 	if(ifd < 0) {
@@ -373,78 +406,149 @@ int main(int argc, char **argv) {
 	banks_d_v = gen_filter(type_v, v_bank_len, num_phases_v);
 	banks_v = quantize_filter_int16_t(banks_d_v, v_bank_len, num_phases_v, 1 << quant_v);
 
-	if(!print_filters)
-		goto execute;
-
-	for(i = 0; i < num_phases_h; i++) {
-		printf("hbank[%3u] : [", i);
-		for(j = 0; j < h_bank_len; j++)
-			printf("% 1.6lf%s", banks_d_h[i][j], j == h_bank_len - 1 ? "] / [" : " ");
-		for(j = 0; j < h_bank_len; j++)
-			printf("% 3d%s", banks_h[i][j], j == h_bank_len - 1 ? "]" : " ");
-		printf("\n");
+	if(conv_2d) {
+		banks_hv = malloc(sizeof(int16_t **) * num_phases_h * num_phases_v);
+		for(i = 0; i < num_phases_v; i++)
+			for(j = 0; j < num_phases_h; j++)
+				banks_hv[i * num_phases_h + j] = mat(banks_d_v[i], v_bank_len, banks_d_h[j], h_bank_len, 1 << quant_v);
 	}
 
-	for(i = 0; i < num_phases_v; i++) {
-		printf("vbank[%3u] : [", i);
-		for(j = 0; j < v_bank_len; j++)
-			printf("% 1.6lf%s", banks_d_v[i][j], j == v_bank_len - 1 ? "] / [" : " ");
-		for(j = 0; j < v_bank_len; j++)
-			printf("% 3d%s", banks_v[i][j], j == v_bank_len - 1 ? "]" : " ");
-		printf("\n");
-	}
+	if(print_filters) {
+		for(i = 0; i < num_phases_h; i++) {
+			printf("hbank[%3u] : [", i);
+			for(j = 0; j < h_bank_len; j++)
+				printf("% 1.6lf%s", banks_d_h[i][j], j == h_bank_len - 1 ? "] / [" : " ");
+			for(j = 0; j < h_bank_len; j++)
+				printf("% 3d%s", banks_h[i][j], j == h_bank_len - 1 ? "]" : " ");
+			printf("\n");
+		}
 
-execute:
-	if(conv_2d)
-		goto convolute_2d;
-
-	for(i = 0; i < in_height; i++) {
-		for(j = 0; j < out_width; j++) {
-			int in_pixel, iphase;
-			calculate_phase_info(j, &in_pixel, &iphase, out_width, in_width, num_phases_h);
-
-			mid_data[i * out_width + j] = convolve_one_uint8_t(banks_h[iphase], h_bank_len, in_data + i * in_width, in_width, 1, in_pixel, quant_h);
-			mid_data[out_width * in_height + i * out_width + j] = convolve_one_uint8_t(banks_h[iphase], h_bank_len, in_data + in_width * in_height + i * in_width, in_width, 1, in_pixel, quant_h);
-			mid_data[2 * out_width * in_height + i * out_width + j] = convolve_one_uint8_t(banks_h[iphase], h_bank_len, in_data + 2 * in_width * in_height + i * in_width, in_width, 1, in_pixel, quant_h);
+		for(i = 0; i < num_phases_v; i++) {
+			printf("vbank[%3u] : [", i);
+			for(j = 0; j < v_bank_len; j++)
+				printf("% 1.6lf%s", banks_d_v[i][j], j == v_bank_len - 1 ? "] / [" : " ");
+			for(j = 0; j < v_bank_len; j++)
+				printf("% 3d%s", banks_v[i][j], j == v_bank_len - 1 ? "]" : " ");
+			printf("\n");
 		}
 	}
 
-	for(i = 0; i < out_width; i++) {
-		for(j = 0; j < out_height; j++) {
-			int in_pixel, iphase;
-			calculate_phase_info(j, &in_pixel, &iphase, out_height, in_height, num_phases_v);
+	if(max_diff < 0xffffffffffffffffull)
+		nsecs_buckets = malloc((nsecs_bucket_cnt + 1) * sizeof(struct hist));
+	else
+		nsecs_buckets = malloc((nsecs_bucket_cnt) * sizeof(struct hist));
 
-			out_data[j * out_width + i] = convolve_one_uint8_t(banks_v[iphase], v_bank_len, mid_data + i, in_height, out_width, in_pixel, quant_v);
-			out_data[out_width * out_height + j * out_width + i] = convolve_one_uint8_t(banks_v[iphase], v_bank_len, mid_data + out_width * in_height + i, in_height, out_width, in_pixel, quant_v);
-			out_data[2 * out_width * out_height + j * out_width + i] = convolve_one_uint8_t(banks_v[iphase], v_bank_len, mid_data + 2 * out_width * in_height + i, in_height, out_width, in_pixel, quant_v);
+	nsecs_buckets[0].min = min_diff;
+	nsecs_buckets[0].max = nsecs_buckets[0].min + diff_delta;
+	nsecs_buckets[0].count = 0;
+
+	for(cnt = 1; cnt < nsecs_bucket_cnt; cnt++) {
+		nsecs_buckets[cnt].count = 0;
+		nsecs_buckets[cnt].min = nsecs_buckets[cnt - 1].max;
+		nsecs_buckets[cnt].max = nsecs_buckets[cnt].min + diff_delta;
+	}
+
+	if(max_diff < 0xffffffffffffffffull) {
+		nsecs_buckets[cnt].min = nsecs_buckets[cnt - 1].max;
+		nsecs_buckets[cnt].max = 0xffffffffffffffffull;
+		nsecs_buckets[cnt].count = 0;
+
+		nsecs_bucket_cnt++;
+	}
+
+perf_loop:
+	clock_gettime(CLOCK_MONOTONIC, &start);
+
+	if(!conv_2d) {
+		for(i = 0; i < in_height; i++) {
+			for(j = 0; j < out_width; j++) {
+				int in_pixel, iphase;
+
+				phase_info_calc_func(j, &in_pixel, &iphase, out_width, in_width, num_phases_h);
+
+				mid_data[i * out_width + j] = convolve_one_uint8_t(banks_h[iphase],
+						h_bank_len, in_data + i * in_width, in_width, 1, in_pixel, quant_h);
+				mid_data[out_width * in_height + i * out_width + j] = convolve_one_uint8_t(banks_h[iphase],
+						h_bank_len, in_data + in_width * in_height + i * in_width, in_width, 1,
+						in_pixel, quant_h);
+				mid_data[2 * out_width * in_height + i * out_width + j] = convolve_one_uint8_t(banks_h[iphase],
+						h_bank_len, in_data + 2 * in_width * in_height + i * in_width, in_width, 1,
+						in_pixel, quant_h);
+			}
+		}
+
+		for(i = 0; i < out_width; i++) {
+			for(j = 0; j < out_height; j++) {
+				int in_pixel, iphase;
+				phase_info_calc_func(j, &in_pixel, &iphase, out_height, in_height, num_phases_v);
+
+				out_data[j * out_width + i] = convolve_one_uint8_t(banks_v[iphase],
+						v_bank_len, mid_data + i, in_height, out_width, in_pixel, quant_v);
+				out_data[out_width * out_height + j * out_width + i] = convolve_one_uint8_t(banks_v[iphase],
+						v_bank_len, mid_data + out_width * in_height + i, in_height, out_width,
+						in_pixel, quant_v);
+				out_data[2 * out_width * out_height + j * out_width + i] = convolve_one_uint8_t(banks_v[iphase],
+						v_bank_len, mid_data + 2 * out_width * in_height + i, in_height, out_width,
+						in_pixel, quant_v);
+			}
+		}
+	} else { 
+		for(i = 0; i < out_height; i++) {
+			for(j = 0; j < out_width; j++) {
+				int in_pixel_h, iphase_h;
+				int in_pixel_v, iphase_v;
+				int16_t **bank;
+
+				phase_info_calc_func(j, &in_pixel_h, &iphase_h, out_width, in_width, num_phases_h);
+				phase_info_calc_func(i, &in_pixel_v, &iphase_v, out_height, in_height, num_phases_v);
+				bank = banks_hv[iphase_v * num_phases_h + iphase_h];
+
+				out_data[i * out_width + j] = convolve_one_uint8_t_2d(bank, v_bank_len, h_bank_len, in_data,
+						in_height, in_width, in_width, 1, in_pixel_v, in_pixel_h, quant_v);
+				out_data[out_width * out_height + i * out_width + j] = convolve_one_uint8_t_2d(bank,
+						v_bank_len, h_bank_len, in_data + in_width * in_height,
+						in_height, in_width, in_width, 1, in_pixel_v, in_pixel_h, quant_v);
+				out_data[2 * out_width * out_height + i * out_width + j] = convolve_one_uint8_t_2d(bank,
+						v_bank_len, h_bank_len, in_data + 2 * in_width * in_height,
+						in_height, in_width, in_width, 1, in_pixel_v, in_pixel_h, quant_v);
+
+			}
 		}
 	}
 
-	goto done;
+	clock_gettime(CLOCK_MONOTONIC, &end);
 
-convolute_2d:
-	for(i = 0; i < out_height; i++) {
-		for(j = 0; j < out_width; j++) {
-			int in_pixel_h, iphase_h;
-			int in_pixel_v, iphase_v;
+	iter_cnt++;
 
-			calculate_phase_info(j, &in_pixel_h, &iphase_h, out_width, in_width, num_phases_h);
-			calculate_phase_info(i, &in_pixel_v, &iphase_v, out_height, in_height, num_phases_v);
+	uint64_t nsecs_start = start.tv_sec * 1000000000ull + start.tv_nsec;
+	uint64_t nsecs_end   =   end.tv_sec * 1000000000ull +   end.tv_nsec;
 
-			int16_t **bank = mat(banks_v[iphase_v], v_bank_len, quant_v, banks_h[iphase_h], h_bank_len, quant_h, 6);
+	uint64_t nsecs_diff = nsecs_end - nsecs_start;
 
-			out_data[i * out_width + j] = convolve_one_uint8_t_2d(bank, v_bank_len, h_bank_len, in_data,
-					in_height, in_width, in_width, 1, in_pixel_v, in_pixel_h, 6);
-			out_data[out_width * out_height + i * out_width + j] = convolve_one_uint8_t_2d(bank,
-					v_bank_len, h_bank_len, in_data + in_width * in_height,
-					in_height, in_width, in_width, 1, in_pixel_v, in_pixel_h, 6);
-			out_data[2 * out_width * out_height + i * out_width + j] = convolve_one_uint8_t_2d(bank,
-					v_bank_len, h_bank_len, in_data + 2 * in_width * in_height,
-					in_height, in_width, in_width, 1, in_pixel_v, in_pixel_h, 6);
+	if(nsecs_diff > max_nsecs_diff)
+		max_nsecs_diff = nsecs_diff;
+	if(nsecs_diff < min_nsecs_diff)
+		min_nsecs_diff = nsecs_diff;
 
+	avg_nsecs_diff *= (iter_cnt - 1);
+	avg_nsecs_diff += nsecs_diff;
+	avg_nsecs_diff = (uint64_t)((float)avg_nsecs_diff / iter_cnt);
+
+	for(cnt = 0; cnt < nsecs_bucket_cnt; cnt++)
+		if(nsecs_diff >= nsecs_buckets[cnt].min && nsecs_diff < nsecs_buckets[cnt].max) {
+			nsecs_buckets[cnt].count++;
+			break;
 		}
-	}
-done:
+
+	if(iter_cnt < iter)
+		goto perf_loop;
+
+
+	printf("Total %u  iterations: min = %lu, max = %lu, avg = %lu\n",
+			iter, min_nsecs_diff, max_nsecs_diff, avg_nsecs_diff);
+	for(cnt = 0; cnt < nsecs_bucket_cnt; cnt++)
+		printf("%20lu - %20lu: %5.2f%%\n", nsecs_buckets[cnt].min, nsecs_buckets[cnt].max,
+				(nsecs_buckets[cnt].count * 100) /(float)iter);
 
 	write(ofd, out_data, osize);
 	close(ofd);
@@ -460,6 +564,7 @@ done:
 				"-f", arsprintf("%s-scaled", filename_common),
 				"-w", arsprintf("%d", out_width),
 				"-h", arsprintf("%d", out_height), "-s", "-m",
+				"-i", arsprintf("%d", iter),
 				NULL);
 	} else {
 		waitpid(pid, NULL, 0);
